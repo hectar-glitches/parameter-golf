@@ -86,8 +86,8 @@ class Hyperparameters:
     eval_stride = int(os.environ.get("EVAL_STRIDE", 64))
     eval_batch_seqs = int(os.environ.get("EVAL_BATCH_SEQS", 32))
 
-    bigram_vocab_size = int(os.environ.get("BIGRAM_VOCAB_SIZE", 20480))
-    bigram_dim = int(os.environ.get("BIGRAM_DIM", 128))
+    bigram_vocab_size = int(os.environ.get("BIGRAM_VOCAB_SIZE", 16384))
+    bigram_dim = int(os.environ.get("BIGRAM_DIM", 96))
 
     # SWA disabled — EMA used instead
     swa_enabled = False
@@ -96,6 +96,7 @@ class Hyperparameters:
     qat_enabled = bool(int(os.environ.get("QAT_ENABLED", "1")))
     qat_mlp_clip = int(os.environ.get("QAT_MLP_CLIP", 7))   # int4 for MLP
     qat_attn_clip = int(os.environ.get("QAT_ATTN_CLIP", 15))  # int5 for attn/bigram
+    lsq_enabled = bool(int(os.environ.get("LSQ_ENABLED", "1")))  # learned step sizes (LSQ)
 
     # Architecture features
     xsa_last_n = int(os.environ.get("XSA_LAST_N", 4))       # XSA on last N layers
@@ -491,13 +492,24 @@ class CastedLinear(nn.Linear):
     # _qat_clip: 0 = no QAT; 7 = int4 (16 levels), 15 = int5 (32 levels), 31 = int6 (64 levels)
     _qat_clip: int = 0
 
+    def enable_lsq(self) -> None:
+        """Initialize a learned per-row log step-size (LSQ) for this layer."""
+        if self._qat_clip > 0 and self.weight.ndim == 2:
+            with torch.no_grad():
+                amax = self.weight.float().abs().amax(dim=-1).clamp_min(1e-12)
+                init_log = (amax / self._qat_clip).log()
+            self.register_parameter("log_step", nn.Parameter(init_log))
+
     def forward(self, x: Tensor) -> Tensor:
         w = self.weight
         if self._qat_clip > 0 and self.training and w.ndim == 2:
             w_f = w.float()
             clip = self._qat_clip
-            amax = w_f.abs().amax(dim=-1, keepdim=True).clamp_min(1e-12)
-            scale = amax / clip
+            log_step = getattr(self, "log_step", None)
+            if log_step is not None:
+                scale = log_step.exp().unsqueeze(-1)  # (rows, 1) — learned step size
+            else:
+                scale = w_f.abs().amax(dim=-1, keepdim=True).clamp_min(1e-12) / clip
             q = torch.clamp(torch.round(w_f / scale), -(clip + 1), clip)
             w = w + (q * scale - w_f).detach()  # STE: straight-through estimator
         bias = self.bias.to(x.dtype) if self.bias is not None else None
@@ -1008,6 +1020,11 @@ def main() -> None:
                 elif cat in ("attn", "bigram"):
                     module._qat_clip = args.qat_attn_clip
         log0(f"qat_enabled mlp_clip:{args.qat_mlp_clip} attn_clip:{args.qat_attn_clip}")
+        if args.lsq_enabled:
+            for module in base_model.modules():
+                if isinstance(module, CastedLinear):
+                    module.enable_lsq()
+            log0("lsq_enabled: learned per-row step sizes initialized")
     compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
 
@@ -1025,6 +1042,11 @@ def main() -> None:
     scalar_params.append(base_model.smear.gate)
     if base_model.bigram is not None:
         scalar_params.append(base_model.bigram.scale)
+    if args.lsq_enabled:
+        lsq_params = [m.log_step for m in base_model.modules()
+                      if isinstance(m, CastedLinear) and hasattr(m, "log_step")]
+        scalar_params.extend(lsq_params)
+        log0(f"lsq_params added to scalar optimizer: {len(lsq_params)} tensors")
 
     token_lr = args.tied_embed_lr if args.tie_embeddings else args.embed_lr
     tok_params = [{"params": [base_model.tok_emb.weight], "lr": token_lr, "base_lr": token_lr}]
@@ -1250,7 +1272,9 @@ def main() -> None:
                 param.masked_fill_(mask, 0.0)
 
     # INT6 mixed quantization + zstd/zlib export
-    sd_cpu = {k: v.detach().cpu() for k, v in base_model.state_dict().items()}
+    # Exclude LSQ log_step params — training-only, not needed at inference
+    sd_cpu = {k: v.detach().cpu() for k, v in base_model.state_dict().items()
+              if not k.endswith(".log_step")}
     quant_result, quant_meta = mixed_quantize_int6(sd_cpu, {"mlp", "attn", "bigram"})
     quant_buf = io.BytesIO()
     torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
