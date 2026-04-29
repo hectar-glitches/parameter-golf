@@ -23,6 +23,7 @@ python3 -c "from flash_attn_interface import flash_attn_func; print('FA3 OK')" \
   || { echo "ERROR: flash_attn_interface not available."; exit 1; }
 
 # ── 4. Install lrzip (needed for per-group ZPAQ compression) ─────────────────
+DEBIAN_FRONTEND=noninteractive apt-get update -q
 DEBIAN_FRONTEND=noninteractive apt-get install -y -q lrzip
 
 # ── 5. Download SOTA record files (train_gpt.py + CaseOps helpers) ────────────
