@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
-# NOTE: Use a 100 GB container disk on RunPod.
-# Data prep downloads ~40 GB of raw docs; they are deleted after tokenization,
-# leaving ~36 GB for the CaseOps dataset + packages.
+# NOTE: Use a 200 GB volume disk on RunPod (mounted at /workspace).
+# Data prep downloads ~48 GB of raw docs; they are deleted after tokenization,
+# leaving ~20 GB for the CaseOps dataset shards.
 
 SOTA_RECORD="records/track_10min_16mb/2026-04-27_SP8192_LQER_SparseGate_BOSSmearFix_9HpStack_1.0611"
 SOTA_RAW="https://raw.githubusercontent.com/openai/parameter-golf/main/${SOTA_RECORD}"
@@ -59,12 +59,17 @@ EOF
 )
 echo "docs_selected.jsonl: ${DOCS_JSONL}"
 
-# Tokenize with CaseOps → data/datasets/fineweb10B_sp8192_lossless_caps_caseops_v1_reserved/
-# (prepare_caseops_data.py appends datasets/<name> to --out)
-python3 "${SOTA_RECORD}/prepare_caseops_data.py" \
-  --docs "${DOCS_JSONL}" \
-  --out  data \
-  --sp   "${SOTA_RECORD}/tokenizers/fineweb_8192_bpe_lossless_caps_caseops_v1_reserved.model"
+# Tokenize with CaseOps using parallel workers (~20 min vs 10 hours single-threaded).
+# Strategy: stream docs_selected.jsonl, split across N workers, each writes its own
+# temp train shards; first worker also handles all val docs (first 10k).
+# Merges and renumbers shards at the end.
+NWORKERS=$(nproc)
+SP_MODEL="${SOTA_RECORD}/tokenizers/fineweb_8192_bpe_lossless_caps_caseops_v1_reserved.model"
+python3 experiments/prepare_caseops_parallel.py \
+  --docs    "${DOCS_JSONL}" \
+  --out     data \
+  --sp      "${SP_MODEL}" \
+  --workers "${NWORKERS}"
 
 # Free ~40 GB used by docs_selected.jsonl HF cache — no longer needed.
 rm -rf /workspace/.hf_cache
