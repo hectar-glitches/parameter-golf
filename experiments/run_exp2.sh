@@ -8,7 +8,7 @@ mkdir -p $LOG_DIR
 
 for SEED in 42 1337 2024; do
   echo "=== Exp2 SEED=$SEED ==="
-  TTT_ENABLED=1 QK_GAIN_INIT=5.25 SEED=$SEED \
+  TTT_ENABLED=1 QK_GAIN_INIT=5.25 TTT_EPOCHS=4 SEED=$SEED \
     torchrun --standalone --nproc_per_node=8 $SCRIPT \
     2>&1 | tee $LOG_DIR/seed${SEED}.log
   echo "val_bpb seed $SEED: $(grep 'val_bpb' $LOG_DIR/seed${SEED}.log | tail -1)"
