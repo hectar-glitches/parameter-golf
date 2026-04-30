@@ -1,0 +1,12 @@
+{
+  "author": "hectar-bugs",
+  "github_id": "hectar-bugs",
+  "name": "EXP4: SOTA Base + 4-Phase TTT",
+  "blurb": "SOTA-base 4-phase TTT using the verified exp4 pod run. Local measurements had a +0.00508 bpb inflation, so the corrected 3-seed mean is approximately 1.06071, below the current SOTA 1.06108. Regenerate this file from the exact pod logs with the bundled script before submission.",
+  "date": "2026-04-30",
+  "val_loss": null,
+  "val_bpb": 1.06071,
+  "bytes_total": null,
+  "bytes_code": null,
+  "seeds": [0, 42, 1234]
+}
