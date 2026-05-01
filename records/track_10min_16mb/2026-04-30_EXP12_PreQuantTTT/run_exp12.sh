@@ -13,11 +13,15 @@ export LOOP_END=5
 # 2. Add hyperparams for the PreQuantTTT
 export PRE_QUANT_EPOCHS=21
 export PRE_QUANT_LR=5e-4
-export TOKENIZER_VOCAB_SIZE=10240
+export VOCAB_SIZE=8192
 
-# 3. Execute the custom EXP12 Python script
+# Point DATA_DIR to the workspace root so relative paths resolve correctly
+export DATA_DIR=/workspace/parameter-golf/data/
+
+# 3. Execute the custom EXP12 Python script from workspace root
 echo "Running EXP12 Training Pipeline with Depth Recurrence..."
-python train_gpt_exp12.py
+cd /workspace/parameter-golf
+python records/track_10min_16mb/2026-04-30_EXP12_PreQuantTTT/train_gpt_exp12.py
 
 # 4. Check if successful
 if [ $? -eq 0 ]; then
